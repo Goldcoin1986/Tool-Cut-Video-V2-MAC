@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import logging
 import re
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Callable
 
@@ -597,57 +599,87 @@ class YouTubeDownloader:
         return resolved
 
     @staticmethod
+    def _has_audio_stream(path: Path) -> bool:
+        """Return True only when ffprobe can confirm at least one audio stream.
+
+        This prevents yt-dlp's intermediate video-only stream from being
+        mistaken for the final merged download.
+        """
+        ffprobe = shutil.which("ffprobe")
+        if not ffprobe or not path.exists() or path.stat().st_size <= 0:
+            return False
+        try:
+            result = subprocess.run(
+                [ffprobe, "-v", "error", "-select_streams", "a",
+                 "-show_entries", "stream=index", "-of", "csv=p=0", str(path)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=15,
+                check=False,
+            )
+            return result.returncode == 0 and bool(result.stdout.strip())
+        except (OSError, subprocess.SubprocessError):
+            return False
+
+    @classmethod
     def _resolve_final_path(
+        cls,
         info: dict,
         final_path: str,
         hook_reported_path: str | None,
         output_dir: Path,
     ) -> Path | None:
-        """Determine the actual merged output file on disk.
+        """Determine the final merged output, preferring files with audio.
 
-        yt-dlp reports several different candidate paths depending on
-        whether a merge/postprocessing step ran (video+audio merge changes
-        the final filename/extension after progress_hooks already fired),
-        so no single source is reliable on its own. Try each candidate in
-        order of trustworthiness, then fall back to searching output_dir
-        directly for the video ID this download was for.
+        Modern YouTube downloads commonly arrive as separate video and audio
+        streams. ``requested_downloads`` therefore contains intermediate
+        files and must be considered only after yt-dlp's final output paths.
         """
         candidates: list[Path] = []
 
-        # yt-dlp attaches the true final path(s) here after any merge.
+        # Most trustworthy: paths reported after post-processing/merging.
+        for fp in (info.get("filepath"), final_path, hook_reported_path):
+            if fp:
+                candidates.append(Path(fp))
+
+        # Intermediate downloads are last-resort candidates only.
         for rd in info.get("requested_downloads") or []:
             fp = rd.get("filepath") or rd.get("_filename")
             if fp:
                 candidates.append(Path(fp))
 
-        if info.get("filepath"):
-            candidates.append(Path(info["filepath"]))
-        if hook_reported_path:
-            candidates.append(Path(hook_reported_path))
-        if final_path:
-            candidates.append(Path(final_path))
-
+        existing: list[Path] = []
+        seen: set[Path] = set()
         for candidate in candidates:
-            if candidate.exists() and candidate.stat().st_size > 0:
-                return candidate
-            alt = candidate.with_suffix(".mp4")
-            if alt.exists() and alt.stat().st_size > 0:
-                return alt
+            for option in (candidate, candidate.with_suffix(".mp4")):
+                if option in seen:
+                    continue
+                seen.add(option)
+                if option.exists() and option.stat().st_size > 0:
+                    existing.append(option)
 
-        # Last resort: the merge_output_format is mp4 and outtmpl always
-        # names files source_<id>_<resolution>.<ext>, so search directly
-        # by video ID (resolution suffix may vary, hence the wildcard).
+        # Never return a video-only intermediate while a merged file with
+        # audio is available.
+        for candidate in existing:
+            if cls._has_audio_stream(candidate):
+                return candidate
+
+        # Search output directory as yt-dlp may rename after merging.
         video_id = info.get("id")
         if video_id:
             matches = [
                 m for m in output_dir.glob(f"source_{video_id}_*")
                 if m.is_file() and m.stat().st_size > 0
             ]
-            if matches:
-                matches.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-                return matches[0]
+            matches.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+            for match in matches:
+                if cls._has_audio_stream(match):
+                    return match
 
-        return None
+        # Final fallback for genuinely silent source videos or environments
+        # where ffprobe is unavailable.
+        return existing[0] if existing else None
 
     def _find_cached(self, url: str, output_dir: Path, resolution_tag: str) -> Path | None:
         """Return an already-downloaded file for this video ID AND
@@ -663,8 +695,14 @@ class YouTubeDownloader:
         if video_id is None:
             return None
 
-        for existing in output_dir.glob(f"source_{video_id}_{resolution_tag}.*"):
-            if existing.is_file() and existing.stat().st_size > 0:
+        candidates = [
+            existing for existing in output_dir.glob(f"source_{video_id}_{resolution_tag}.*")
+            if existing.is_file() and existing.stat().st_size > 0
+        ]
+        candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        # Ignore stale video-only cache entries when ffprobe is available.
+        for existing in candidates:
+            if self._has_audio_stream(existing):
                 return existing
         return None
 
