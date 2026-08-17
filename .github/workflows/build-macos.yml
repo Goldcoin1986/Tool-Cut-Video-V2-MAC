@@ -1,0 +1,84 @@
+name: Build macOS App
+
+# Chạy khi bạn bấm "Run workflow" thủ công trên GitHub, hoặc mỗi khi push
+# lên nhánh main. Có thể xoá phần "push:" bên dưới nếu chỉ muốn chạy thủ công.
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install FFmpeg (for bundling into the app)
+        run: |
+          brew install ffmpeg
+          mkdir -p ffmpeg
+          cp "$(which ffmpeg)" ffmpeg/ffmpeg
+          cp "$(which ffprobe)" ffmpeg/ffprobe
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller Pillow
+
+      - name: Remove the broken legacy "typing" package
+        # Cùng lý do như build.bat làm trên Windows: gói pip "typing" (khác
+        # module typing có sẵn của Python) làm PyInstaller lỗi nếu còn cài.
+        run: pip uninstall -y typing || true
+
+      - name: Convert app.ico -> app.icns (macOS icon format)
+        run: |
+          python - <<'PY'
+          from PIL import Image
+          import os
+          img = Image.open("assets/icons/app.ico")
+          os.makedirs("icon.iconset", exist_ok=True)
+          for s in [16, 32, 128, 256, 512]:
+              img.resize((s, s)).save(f"icon.iconset/icon_{s}x{s}.png")
+              img.resize((s * 2, s * 2)).save(f"icon.iconset/icon_{s}x{s}@2x.png")
+          PY
+          iconutil -c icns icon.iconset -o app.icns
+
+      - name: Locate resemblyzer's bundled pretrained.pt (for AI dubbing)
+        id: resemblyzer
+        run: |
+          PT_PATH=$(python -c "import resemblyzer, os; print(os.path.join(os.path.dirname(resemblyzer.__file__), 'pretrained.pt'))")
+          echo "pt_path=$PT_PATH" >> "$GITHUB_OUTPUT"
+
+      - name: Build with PyInstaller
+        run: |
+          pyinstaller \
+            --name "Tool Cut Video V1" \
+            --windowed \
+            --onedir \
+            --icon "app.icns" \
+            --add-data "app.icns:assets/icons" \
+            --add-data "assets/splash/splash.png:assets/splash" \
+            --add-data "ffmpeg/ffmpeg:ffmpeg" \
+            --add-data "ffmpeg/ffprobe:ffmpeg" \
+            --add-data "app/assets:app/assets" \
+            --add-data "${{ steps.resemblyzer.outputs.pt_path }}:resemblyzer" \
+            main.py
+
+      - name: Zip the .app bundle
+        run: |
+          cd dist
+          zip -r "ToolCutVideo-macOS.zip" "Tool Cut Video V1.app"
+
+      - name: Upload build as an artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ToolCutVideo-macOS
+          path: dist/ToolCutVideo-macOS.zip
