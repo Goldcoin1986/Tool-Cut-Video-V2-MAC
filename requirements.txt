@@ -1,0 +1,112 @@
+PySide6>=6.6.0
+# Composes the platform-icon (X/Facebook/TikTok/YouTube) + handle-text
+# watermark badge (app/core/watermark_composer.py) into a PNG that
+# FFmpeg then overlays onto every cut clip.
+Pillow>=10.0.0
+# YouTube's PO Token enforcement (see the yt-dlp PO Token Guide) evolves
+# fast, and older yt-dlp releases handle it far worse — always keep this
+# reasonably current. Run `pip install -U "yt-dlp[default]"` periodically
+# even after initial setup (not plain "yt-dlp" — see the [default] note
+# below, it must be re-applied on every upgrade too).
+#
+# The [default] extra bundles yt-dlp-ejs, the package of scripts yt-dlp
+# runs (via a local JavaScript runtime — see README.md, "Fixing the 360p
+# cap") to solve YouTube's "n challenge". Without it, a plain
+# 'pip install yt-dlp' still fails to unlock 720p/1080p even after a JS
+# runtime is installed and even after the PO Token requirement below is
+# satisfied.
+yt-dlp[default]>=2026.07.04
+# Needed by yt-dlp to decrypt cookies from Chrome/Edge/Brave (Chromium-based
+# browsers encrypt their cookie store). Not required if only using Firefox,
+# but harmless to always install.
+pycryptodomex>=3.19.0
+# WITHOUT THIS, YOU WILL BE STUCK AT 360p. As of 2026 YouTube requires a
+# "PO Token" for its 'web' client to serve anything above the old 360p
+# progressive format (itag 18) — without one, yt-dlp's 'web' request gets
+# a 403/"no matching format" and this app's fallback chain (see
+# app/core/downloader.py) drops down to the 'android' client, which only
+# ever exposes that same capped 360p stream. This plugin lets yt-dlp
+# fetch a valid PO Token automatically so the 'web' client (and therefore
+# 1080p/720p) works again. See README.md "Fixing the 360p cap" for the
+# one-time setup this package still needs (a local Node.js script).
+bgutil-ytdlp-pot-provider>=1.3.1
+
+# --- AI auto-dubbing (app/core/diarization.py, app/core/dubber.py) ---
+# Everything below is only imported lazily, at first actual use of the
+# "Lồng tiếng tự động (AI)" checkbox — NOT at app startup — but still
+# needs to be installed for that checkbox to work, and (for a packaged
+# .exe via build.bat/PyInstaller) does meaningfully increase build size
+# and first-run cost. See diarization.py's and dubber.py's module
+# docstrings for the lazy-loading rationale in detail.
+#
+# IMPORTANT ABOUT SIZE: resemblyzer (below) transitively depends on
+# PyTorch, and a PLAIN "pip install -r requirements.txt" on Windows
+# will pull PyPI's DEFAULT torch build, which bundles the full NVIDIA
+# CUDA runtime — several GB — even though this app only ever runs
+# diarization on CPU (see diarization.py's Diarizer:
+# VoiceEncoder(device="cpu"), explicit, since this app can't assume the
+# end user has an NVIDIA GPU at all). build.bat already handles this
+# automatically (installs the much smaller CPU-only torch build FIRST,
+# from PyTorch's own package index, before this file gets processed).
+# If you're installing this file directly instead of via build.bat
+# (e.g. for `python main.py` during development), run this ONE command
+# first to get the same size savings:
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+# Free, no-API-key Microsoft Edge "Read Aloud" TTS wrapper — same
+# "unofficial endpoint, can change/break anytime" caveat as the
+# translate.googleapis.com endpoint translator.py already uses.
+edge-tts>=6.1.0
+# resemblyzer loads its bundled pretrained model weights via
+# pkg_resources (part of setuptools) at runtime. This is a TWO-part
+# problem, both parts need this one pin:
+#   1. Python 3.12+ no longer auto-installs setuptools into every new
+#      environment the way older Python versions did, so it can be
+#      completely absent on a fresh install.
+#   2. Even if setuptools IS installed, setuptools 82.0 (Feb 2026)
+#      went further than just deprecating pkg_resources — it REMOVED
+#      the module entirely. "pip install setuptools" with no version
+#      cap therefore grabs the newest release and you'd hit the exact
+#      same "No module named 'pkg_resources'" error again, just from a
+#      different cause than problem #1.
+# The upper bound below (<82) is what actually fixes this — it's not
+# enough to just have "some" setuptools installed, it has to be one
+# that still contains pkg_resources at all. (diarization.py's whole
+# diarize() call is wrapped in a try/except that logs this and falls
+# back to one default voice rather than crashing the cut if this pin
+# is somehow bypassed — but you obviously want the real per-speaker
+# voice feature working, not silently falling back to one voice.)
+setuptools>=68.0.0,<82
+# Speaker-embedding model for diarization. Deliberately NOT
+# pyannote.audio — that needs a Hugging Face account + access token,
+# which doesn't work for an end user just running a downloaded .exe
+# (see diarization.py's module docstring). resemblyzer's pretrained
+# weights ship INSIDE the pip package itself, so there's no separate
+# model download step at runtime.
+#
+# NOTE: resemblyzer's own package metadata pulls in a package literally
+# called "typing" (a long-dead Python-2-era backport, NOT the "typing"
+# module built into Python itself since 3.5) — that package breaks
+# PyInstaller if left installed. build.bat automatically removes it
+# right after this install step; see the comment there for details.
+# Only matters for the PyInstaller build — fine to ignore if you're
+# just running `python main.py` during development.
+resemblyzer>=0.1.4
+# Audio loading + pYIN pitch tracking (per-speaker-cluster gender
+# guess). This is the heaviest new dependency here (pulls in numpy,
+# scipy, numba, soundfile, audioread transitively) — the main
+# contributor to this feature's build-size/first-import cost.
+librosa>=0.10.1
+# Frame-level voice-activity detection, to find WHERE in the clip
+# someone is talking before resemblyzer embeds each utterance.
+# `webrtcvad-wheels` (not plain `webrtcvad`) specifically because plain
+# webrtcvad has no prebuilt Windows wheel on PyPI and needs a C++
+# build toolchain to compile from source — a hard blocker for an
+# end-user-run .exe build environment. webrtcvad-wheels is a drop-in
+# fork that ships prebuilt Windows wheels; the import name is still
+# `webrtcvad`.
+webrtcvad-wheels>=2.0.10
+# AgglomerativeClustering (group utterances into up to 4 speakers) +
+# silhouette_score (pick how many speaker clusters actually make
+# sense) — see Diarizer._cluster()'s docstring.
+scikit-learn>=1.3.0
