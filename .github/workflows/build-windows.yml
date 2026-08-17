@@ -1,0 +1,68 @@
+name: Build Windows App
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install FFmpeg
+        shell: pwsh
+        run: |
+          choco install ffmpeg -y
+          New-Item -ItemType Directory -Force -Path ffmpeg
+          Copy-Item (Get-Command ffmpeg).Source ffmpeg\ffmpeg.exe
+          Copy-Item (Get-Command ffprobe).Source ffmpeg\ffprobe.exe
+
+      - name: Install Python dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller Pillow
+
+      - name: Remove legacy typing package
+        shell: pwsh
+        run: |
+          pip uninstall -y typing
+          exit 0
+
+      - name: Build with PyInstaller
+        shell: pwsh
+        run: |
+          pyinstaller `
+            --name "Tool Cut Video V1" `
+            --windowed `
+            --onedir `
+            --icon "assets/icons/app.ico" `
+            --add-data "assets/splash/splash.png;assets/splash" `
+            --add-data "ffmpeg/ffmpeg.exe;ffmpeg" `
+            --add-data "ffmpeg/ffprobe.exe;ffmpeg" `
+            --add-data "app/assets;app/assets" `
+            main.py
+
+      - name: Zip Windows build
+        shell: pwsh
+        run: |
+          Compress-Archive `
+            -Path "dist/Tool Cut Video V1/*" `
+            -DestinationPath "dist/ToolCutVideo-Windows.zip" `
+            -Force
+
+      - name: Upload Windows build
+        uses: actions/upload-artifact@v4
+        with:
+          name: ToolCutVideo-Windows
+          path: dist/ToolCutVideo-Windows.zip
