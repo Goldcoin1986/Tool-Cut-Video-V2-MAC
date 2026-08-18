@@ -107,3 +107,14 @@ explicit path in the app's settings.
 
 Actively developed as a personal project. Built solo — architecture,
 pipeline, GUI, and packaging all designed and implemented end to end.
+
+## Feedback & Contributing
+
+Bug reports, feature ideas, and code review are all welcome — please
+open an [issue](../../issues) or a pull request. If you just want to
+say what you liked/didn't like about the code, that's welcome too.
+
+## License
+
+Released under the [MIT License](LICENSE) — free to use, modify, and
+distribute, including for commercial purposes.
